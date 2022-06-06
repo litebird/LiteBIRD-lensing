@@ -109,8 +109,6 @@ def prepare_obs_Bmap(pobj,cobj,rlz,maskname,lmax=190,nside=128,method='bonly'):
 
     # load mask
     mask = prepare_masks(nside=nside)[maskname]
-    #mask = hp.ud_grade(hp.read_map('../data/lensing/FG_mask.fits'),nside)
-    #W = cs.utils.apodize(nside, mask, 1.)
 
     # residual FG noise
     Qn, Un = hp.read_map(pobj.ffgs[rlz],field=(1,2))/c.Tcmb

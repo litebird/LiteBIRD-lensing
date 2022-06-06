@@ -29,6 +29,7 @@ Om    = (omch2+ombh2)/(H0*.01)**2
 cps   = {'H0':H0,'Om':Om,'Ov':1-Om,'w0':-1,'wa':0.}
 
 # data directory
+# (custumize the directory path to the LiteBIRD shared directory)
 def data_directory(root_fg='../data/PTEP_FG/',root_lens='../data/lensing/',root_mass='../data/lensing/multi-tracer/'):
     direct = {}
     direct['fgs']  = root_fg + '/'
