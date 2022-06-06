@@ -1,0 +1,13 @@
+**/*__pycache__
+**/*.ipynb_checkpoints
+**/*exe
+**/*.dat
+**/*.pkl
+**/*.fits
+**/*.txt
+**/*.png
+**/*.npy
+**/*.log
+old
+ideal
+
