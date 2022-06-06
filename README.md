@@ -5,9 +5,7 @@ This repository contains tools for litebird lensing analysis aiming at analyzing
 This code utilizes cmblensplus (https://toshiyan.github.io/clpdoc/html/)
 
 ### Contributors
-Anto I Lonappan
-Toshiya Namikawa
-:
-:
-:
+Anto I Lonappan, 
+Toshiya Namikawa, 
+...
 
