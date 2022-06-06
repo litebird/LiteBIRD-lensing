@@ -1,0 +1,15 @@
+#!/usr/bin/expect
+
+set Prompt "\[#$%>@\]"
+set timeout 1000
+spawn env LANG=C salloc -N 1 -C haswell -q interactive -t 04:00:00
+
+expect {
+  -glob "${Prompt}" {
+      send "source ~/.bashrc.ext \n"
+      send "py4so \n"
+      send "cd /global/homes/t/toshiyan/Work/Ongoing/litebird/project-lens/ \n"
+      send "python run_mass_cinv-2.py \n"
+      sleep 14400
+  }
+}
