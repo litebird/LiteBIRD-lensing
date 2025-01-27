@@ -9,7 +9,7 @@ import sys
 import pickle
 
 # from cmblensplus/utils/
-import curvedsky as cs
+import cmblensplus.curvedsky as cs
 import constant as c
 import cmb
 
@@ -65,6 +65,12 @@ class analysis:
         
         # input Anto's phi alm
         self.fiplm = [ d['LOC'] + 'S4BIRD/CMB_Lensed_Maps/MASS/phi_sims_'+x+'.fits' for x in ids ]
+        
+        # Anto's HILC CMB map
+        self.fhilc = [ '/global/cscratch1/sd/lonappan/S4BIRD/DELL_noisefix/s1d1/Maps/sims_'+x+'.fits' for x in ids ]
+        
+        # Anto's HILC noise spectrum
+        self.fnlLB = '/global/cscratch1/sd/lonappan/S4BIRD/DELL_noisefix/s1d1/noise_mean_500.pkl'
 
         # input cmb cls
         self.fucl = d['LOC'] + 'S4BIRD/CAMB/BBSims_scal_dls.dat'
@@ -110,6 +116,15 @@ class analysis:
         #//// residual FG ////#
         self.ffgs = [d['fgs']+'/output_component_separation_PTEP_v18022021_noise_'+x+'.fits' for x in ids]
         self.clfg = bl = np.loadtxt(d['fgs']+'Cl.txt',unpack=True)[1]/c.Tcmb**2
+        
+        #//// CMB S4 noise ////#
+        self.fnlS4 = d['LOC'] + 's4noise/S4_190604d_2LAT_pol_default_noisecurves_deproj0_SENS0_mask_16000_ell_EE_BB.txt'
+        
+        #//// precomputed kappa noise spectra ////#
+        self.nlkk = {}
+        #self.nlkk['klb'] = '/global/cscratch1/sd/lonappan/S4BIRD/DELL_noisefix/s1d1/Reconstruction_190_600/MCN0_400_fsky_0.80.pkl'
+        self.nlkk['klb'] = d['inp'] + 's1d1_fsky_0p8_Dl_MCN0.txt'
+        self.nlkk['ks4'] = d['LOC'] + 's4noise/kappa_deproj0_sens0_16000_lT30-3000_lP30-5000.dat'
 
     
     def load_input_kappa(self,rlz_index,lmax):
@@ -124,6 +139,18 @@ class analysis:
 
         # convert to kappa and output
         return  iplm * self.kL[:lmax+1,None]
+    
+    
+    def load_nl_LB(self,lmax):
+        nl = pickle.load(open(self.fnlLB,"rb"))
+        self.nEE = nl[1][:lmax+1]/cmb.Tcmb**2
+        self.nBB = nl[2][:lmax+1]/cmb.Tcmb**2
+        
+
+    def load_nl_S4(self,lmax):
+        self.nls4 = np.zeros((2,lmax+1))
+        self.nls4[:,10:] = np.loadtxt(self.fnlS4,unpack=True,usecols=(1,2))[:,:lmax-9]/cmb.Tcmb**2
+
 
 
 #////////// Utility functions //////////#
@@ -135,9 +162,11 @@ def rlz(snmin,snmax):
     return np.linspace(snmin,snmax,snmax-snmin+1,dtype=np.int)
 
 
+# This is not used
 class forecast:
     '''
     Simple forecast tools
+    kappa noise is no longer computed from this code and instead use public S4 kappa noise and LiteBIRD kappa noise from sim 
     '''
     
     def __init__(self,experiment):
@@ -170,15 +199,12 @@ class forecast:
         self.ocl = self.lcl + self.nl
 
         
-    def compute_nlkk(self,Lmax=2048):
-        self.set_noise_spectrum()
-        self.nlkk = cs.norm_quad.qall('lens',[True,True,True,True,True,False],Lmax,self.rlmin,self.rlmax,self.lcl,self.ocl,lfac='k')[0]
-        np.savetxt(self.fnlkk,self.nlkk.T)
+    #def compute_nlkk(self,Lmax=2048):
+    #    self.set_noise_spectrum()
+    #    self.nlkk = cs.norm_quad.qall('lens',[True,True,True,True,True,False],Lmax,self.rlmin,self.rlmax,self.lcl,self.ocl,lfac='k')[0]
+    #    np.savetxt(self.fnlkk,self.nlkk.T)
 
         
-    def load_nlkk(self,Lmax=2048):
-        return np.loadtxt( self.fnlkk, unpack=True )[5,:Lmax+1]
-
-
-
+    #def load_nlkk(self,Lmax=2048):
+    #    return np.loadtxt( self.fnlkk, unpack=True )[5,:Lmax+1]
 

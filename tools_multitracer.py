@@ -6,8 +6,8 @@ import tqdm
 from astropy import units as u
 
 # from cmblensplus/wrap
-import basic
-import curvedsky as cs
+import cmblensplus.basic as basic
+import cmblensplus.curvedsky as cs
 
 # from cmblensplus/utils
 import constant as c
@@ -46,6 +46,26 @@ def galaxy_distribution( zi, survey=['euc','lss'], zbn={'euc':5,'lss':5}, z0={'e
     
     return zbin, dndzi, pz, frac
 
+
+def mass_tracer_mask(klist):
+
+    glob = local.analysis()
+    
+    W = {}
+    W['litebird'] = hp.read_map(glob.wind['litebird'])
+    
+    for survey in ['euclid','lsst','cib','cmbs4']:
+        W[survey] = W['litebird']*hp.read_map(glob.wind[survey])
+
+    mask = {}
+    for m in klist.values():
+        if m == 'klb':  mask[m] = W['litebird']
+        if m == 'ks4':  mask[m] = W['cmbs4']
+        if m == 'cib':  mask[m] = W['cib']
+        if 'euc' in m:  mask[m] = W['euclid']
+        if 'lss' in m:  mask[m] = W['lsst']
+        
+    return mask
 
 
 def tracer_list(add_cmb=['klb','ks4'], add_euc=5, add_lss=5, add_cib=True):
@@ -134,17 +154,19 @@ def get_spectrum_noise(lmax,lminI=100,nu=353.,return_klist=False,frac=None,**kwa
     nl = {}
     
     #//// prepare reconstruction noise of LB and S4 ////#
-    #for experiment in ['litebird','s4']:
-    #    obj = local.forecast(experiment)
-    #    obj.compute_nlkk()
+    obj = local.analysis() # used for reading kappa noise curve
 
     if 'klb' in klist.values():
-        obj = local.forecast('litebird')
-        nl['klb'] = obj.load_nlkk(Lmax=lmax)
+        #nlpp = pickle.load(open(obj.nlkk['klb'],"rb"))
+        nl['klb'] = np.zeros(lmax+1)
+        nl['klb'][2:] = np.loadtxt(obj.nlkk['klb'],unpack=True)[1][:lmax-1] # Dl^phiphi
+        nl['klb'] = (np.pi/2.) * nl['klb'][:lmax+1]
     
     if 'ks4' in klist.values():
-        obj = local.forecast('s4')
-        nl['ks4'] = obj.load_nlkk(Lmax=lmax)
+        #obj = local.forecast('s4')
+        #nl['ks4'] = obj.load_nlkk(Lmax=lmax)
+        nl['ks4'] = np.zeros(lmax+1)
+        nl['ks4'][2:] = np.loadtxt(obj.nlkk['ks4'],unpack=True)[7][:lmax-1]
 
     if 'cib' in klist.values():
         Jysr = c.MJysr2uK(nu)/c.Tcmb
@@ -188,10 +210,11 @@ def get_covariance_noise(lmax,lminI=100,frac=None,**kwargs):
     return Ncov
 
 
+
 class mass_tracer():
     # define object which has parameters and filenames for multitracer analysis
     
-    def __init__( self, lmin, lmax, add_cmb=['klb','ks4'], gal_zbn={'euc':5,'lss':5}, add_cib=True ):
+    def __init__( self, lmin, lmax, add_cmb=['klb','ks4'], gal_zbn={'euc':5,'lss':5}, add_cib=True, ktag='' ):
 
         # multipole range of the mass tracer
         self.lmin = lmin
@@ -217,12 +240,11 @@ class mass_tracer():
             self.fklm[m] = [ d['mas'] + 'alm/' + m + '_' + str(rlz) + '.pkl' for rlz in local.ids ]
         
         # kappa alm of combined mass tracer
-        self.fwklm = [ d['mas'] + 'alm/wklm_' + str(rlz) + '.pkl' for rlz in local.ids ]
+        self.fwklm = [ d['mas'] + 'alm/' + '_'.join(filter(None,['wklm',ktag,str(rlz)])) +'.pkl' for rlz in local.ids ]
         
-
     def cov_signal(self):
         
-        return get_covariance_signal(self.lmax,lmin=self.lmin,add_euc=self.add_euc,add_lss=self.add_lss)
+        return get_covariance_signal(self.lmax,lmin=self.lmin,add_cmb=self.add_cmb,add_euc=self.add_euc,add_lss=self.add_lss,add_cib=self.add_cib)
 
     def gal_frac(self):
         
@@ -232,6 +254,126 @@ class mass_tracer():
         
         if frac is None: frac = self.gal_frac()
         
-        return get_covariance_noise(self.lmax,frac=frac,add_euc=self.add_euc,add_lss=self.add_lss)
+        return get_covariance_noise(self.lmax,frac=frac,add_cmb=self.add_cmb,add_euc=self.add_euc,add_lss=self.add_lss,add_cib=self.add_cib)
+
+    def generate_klm(self,rlz):
+        
+        Cov  = self.cov_signal()
+        Ncov = self.cov_noise()
+    
+        # read true CMB lensing kappa
+        iklm = glob.load_input_kappa(rlz,self.lmax)
+    
+        # Gaussian signal alms are generated here
+        sklm = {}
+        glm  = cs.utils.gaussalm(Cov[1:,1:,:],ilm=iklm)
+        for I, m in self.klist.items():
+            if m in ['klb','ks4']: 
+                sklm[m] = glm[0]
+            else:
+                sklm[m] = glm[I-1]
+
+        # Gaussian noise alms are generated here
+        glm  = cs.utils.gaussalm(Ncov)
+                
+        # observed kappa alms
+        oklm = { m: sklm[m]+glm[I] for I, m in self.klist.items() }
+
+        for I, m in self.klist.items():
+            pickle.dump((oklm[m]),open(self.fklm[m][rlz],"wb"),protocol=pickle.HIGHEST_PROTOCOL)
 
 
+    def comb_tracers(self,kmaps,mask,nside=512,**kwargs_cinv):
+
+        print(self.klist)
+        
+        Cov  = self.cov_signal()
+        Ncov = self.cov_noise()
+        npix = 12*nside**2
+
+        InvN = np.reshape( np.array( [ mask[m] for m in self.klist.values() ] ),(self.nkap,npix) )
+        INls = np.array( [ 1./Ncov[:,:,l].diagonal() for l in range(self.lmax+1) ] ).T
+    
+        xlm = cs.cninv.cnfilter_kappa(self.nkap,nside,self.lmax,Cov,InvN,kmaps,inl=INls,**kwargs_cinv)
+        clm = np.array( [ np.dot(Cov[0,:,l],xlm[:,l,:]) for l in range(self.lmax+1) ] )
+        
+        return clm
+    
+
+def comb_mobj(ctype,lmax):
+    
+    if ctype=='klb': # LiteBIRD alne
+        add_cmb = ['klb']
+        gal_zbn = {'euc':0,'lss':0}
+        add_cib = False
+    
+    if ctype=='cib': # LiteBIRD + CIB
+        add_cmb = ['klb']
+        gal_zbn = {'euc':0,'lss':0}
+        add_cib = True
+    
+    if ctype=='gal': # LiteBIRD + galaxies
+        add_cmb = ['klb']
+        gal_zbn = {'euc':5,'lss':5}
+        add_cib = False
+    
+    if ctype=='ext': # LiteBIRD + CIB + galaxies
+        add_cmb = ['klb']
+        gal_zbn = {'euc':5,'lss':5}
+        add_cib = True
+    
+    if ctype=='all': # LiteBIRD + CIB + galaxies + S4
+        add_cmb = ['klb','ks4']
+        gal_zbn = {'euc':5,'lss':5}
+        add_cib = True
+
+    return mass_tracer(lmin=2, lmax=lmax, add_cmb=add_cmb, gal_zbn=gal_zbn, add_cib=add_cib, ktag=ctype)
+
+
+def interface(ctype,snmin,snmax,nside=512,kwargs_ov={},kwargs_cinv={}):
+
+    # define objects
+    glob = local.analysis()
+    mobj = comb_mobj(ctype,lmax=2*nside)
+    
+    # read maximum number of tracers
+    nkap = len(mobj.klist.keys())
+    
+    # npix for mass maps
+    npix = hp.nside2npix(nside)
+
+    # load signal and noise covariance of mass tracers
+    Cov  = mobj.cov_signal()
+    Ncov = mobj.cov_noise()
+
+    # load mask
+    mask = mass_tracer_mask(mobj.klist)
+    
+    # Inverse noise covariance and spectra
+    InvN = np.reshape( np.array( [ mask[m] for m in mobj.klist.values() ] ),(nkap,npix) )
+    INls = np.array( [ 1./Ncov[:,:,l].diagonal() for l in range(mobj.lmax+1) ] ).T
+
+    # loop over realization
+    for rlz in tqdm.tqdm(local.rlz(snmin,snmax),ncols=100,desc='each rlz'):
+    
+        if not misctools.check_path(mobj.fklm['klb'][rlz],**kwargs_ov): 
+            mobj.generate_klm(rlz)
+        
+        oklm = { m: pickle.load(open(mobj.fklm[m][rlz],"rb")) for I, m in mobj.klist.items() }
+
+        if misctools.check_path(mobj.fwklm[rlz],**kwargs_ov): continue
+    
+        # observed mass-tracer maps
+        kmaps = np.zeros((nkap,npix))
+        for I, m in mobj.klist.items():
+            kmaps[I,:] = mask[m] * cs.utils.hp_alm2map(nside,mobj.lmax,mobj.lmax,oklm[m])
+
+        # Computing filtered-alms
+        #print(np.shape(Cov),np.shape(InvN),nside,np.shape(kmaps),nkap)
+        xlm = cs.cninv.cnfilter_kappa(nkap,nside,mobj.lmax,Cov,InvN,kmaps,inl=INls,**kwargs_cinv)
+        clm = np.array( [ np.dot(Cov[0,:,l],xlm[:,l,:]) for l in range(mobj.lmax+1) ] )
+
+        pickle.dump( (clm), open(mobj.fwklm[rlz],"wb"), protocol=pickle.HIGHEST_PROTOCOL )
+
+
+        

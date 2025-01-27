@@ -6,10 +6,7 @@ import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
-# from cmblensplus/wrap
-import curvedsky as cs
-
-# from cmblensplus/utils
+import cmblensplus.curvedsky as cs
 import constant as c
 import misctools
 import cmb
@@ -19,10 +16,10 @@ import local
 
 # //// Fixed values //// #
 
-masks = {'lbs4','lbonly','lbfull'}
+masks = {'lbs4','lbonly','lbfull','cmball'}
 
-theta = {'lb':30.,'s4':2.}
-sigma = {'lb':2.,'s4':1.} # uK-arcmin in polarization
+#theta = {'lb':30.,'s4':2.}
+#sigma = {'lb':2.,'s4':1.} # uK-arcmin in polarization
 
 
 # //// Derived products //// #
@@ -52,19 +49,6 @@ class cmb_map():
 
 # //// Utilities //// #
 
-def prepare_cmb_Ncov(lmax):
-    Ncov = np.zeros((4,4,lmax+1))
-    Ncov[0,0,:] = Ncov[1,1,:] = (sigma['lb']*c.ac2rad/c.Tcmb)**2
-    Ncov[2,2,:] = Ncov[3,3,:] = (sigma['s4']*c.ac2rad/c.Tcmb)**2
-    return Ncov
-
-def prepare_beam(lmax):
-    bl = np.zeros((2,lmax+1))
-    bl[0] = cmb.beam(theta['lb'],lmax,inv=False)
-    bl[1] = cmb.beam(theta['s4'],lmax,inv=False)
-    return bl
-
-
 def prepare_masks(nside=None):
     
     params = local.analysis()
@@ -76,6 +60,7 @@ def prepare_masks(nside=None):
     mask['lbs4']   = W_S4
     mask['lbonly'] = W_LB*(1.-W_S4)
     mask['lbfull'] = W_LB
+    mask['cmball'] = W_LB
     
     if nside is not None:
 
@@ -117,34 +102,41 @@ def prepare_obs_Bmap(pobj,cobj,rlz,maskname,lmax=190,nside=128,method='bonly'):
     Un[np.isnan(Un)] = 0
     Qn = hp.ud_grade( Qn, nside )
     Un = hp.ud_grade( Un, nside )
-    nBlm = cs.utils.hp_map2alm_spin(nside,lmax,lmax,2,mask*Qn,mask*Un)[1]/(bl[:,None]*Wl[:,None])
+    nBlm = cs.utils.hp_map2alm_spin(lmax,lmax,2,mask*Qn,mask*Un)[1]/(bl[:,None]*Wl[:,None])
 
     # lensing 
     Qs, Us = hp.read_map(pobj.ficmb[rlz],field=(1,2))/c.Tcmb
     nsides = hp.get_nside(Qs)
     if method == 'bonly': # ignore E-to-B leakage of lensing
-        sBlm = cs.utils.hp_map2alm_spin(nsides,lmax,lmax,2,Qs,Us)[1]
-        Qs, Us = cs.utils.hp_alm2map_spin(nsides,lmax,lmax,2,0*sBlm,sBlm)
+        sBlm = cs.utils.hp_map2alm_spin(lmax,lmax,2,Qs,Us)[1]
+        Qs, Us = cs.utils.hp_alm2map_spin(nsides,2,0*sBlm,sBlm)
     Qs, Us = qumap_smoothing(Qs,Us,lmax,nside,bl)
-    sBlm = cs.utils.hp_map2alm_spin(nside,lmax,lmax,2,mask*Qs,mask*Us)[1]/(bl[:,None]*wl[:,None])
+    sBlm = cs.utils.hp_map2alm_spin(lmax,lmax,2,mask*Qs,mask*Us)[1]/(bl[:,None]*wl[:,None])
 
     # tensor
     rBlm = pickle.load(open(cobj.fralm[rlz],"rb"))
     lrmax = len(rBlm[:,0]) - 1
-    Qr, Ur = cs.utils.hp_alm2map_spin(nside,lrmax,lrmax,2,0*rBlm,rBlm)
+    Qr, Ur = cs.utils.hp_alm2map_spin(nside,2,0*rBlm,rBlm)
     Qr, Ur = qumap_smoothing(Qr,Ur,lmax,nside,bl)
-    rElm, rBlm = cs.utils.hp_map2alm_spin(nside,lmax,lmax,2,mask*Qr,mask*Ur)/(bl[:,None]*wl[:,None])
+    rElm, rBlm = cs.utils.hp_map2alm_spin(lmax,lmax,2,mask*Qr,mask*Ur)/(bl[:,None]*wl[:,None])
 
     return sBlm, rBlm, nBlm
     
 
-def compute_cmb_noise(cobj,snmax,lmax=1024,**kwargs_ov):
+def compute_cmb_noise(pobj,cobj,snmax,lmax=1024,**kwargs_ov):
     '''
-    Generate noise alms
+    Generate CMBS4 noise alms
     '''
     
+    # S4 noise spectrum
+    nls4 = np.zeros((2,lmax+1))
+    nls4[:,10:] = np.loadtxt(pobj.nls4,unpack=True,usecols=(1,2))[:,:lmax-9]/cmb.Tcmb**2
+    
     # noise covariance
-    Ncov = prepare_cmb_Ncov(lmax)
+    #Ncov = prepare_cmb_Ncov(lmax)
+    Ncov = np.zeros((2,2,lmax+1))
+    Ncov[0,0] = nls4[0]
+    Ncov[1,1] = nls4[1]
 
     for rlz in tqdm.tqdm(local.rlz(1,snmax),ncols=100,desc='rlz (cmb noise)'):
 
@@ -167,8 +159,16 @@ def compute_cmb_tensor(pobj,cobj,snmax,ltmax=200,**kwargs_ov):
         pickle.dump( (rlm), open(cobj.fralm[rlz],"wb"), protocol=pickle.HIGHEST_PROTOCOL )
         
 
-    
-def compute_wiener_highl(pobj,cobj,snmax,nside=512,lmax=1024,**kwargs_ov):
+def inv_aps(cl):
+    ret = np.zeros_like(cl)
+    ret[np.where(cl > 0)] = 1. / cl[np.where(cl > 0)]
+    return ret
+
+
+def compute_wiener_highl(pobj,cobj,snmin,snmax,nside=512,lmax=1024,**kwargs_ov):
+    '''
+    Combine LiteBIRD and S4 E-modes
+    '''
 
     # set parameters
     npix = hp.nside2npix(nside)
@@ -176,55 +176,78 @@ def compute_wiener_highl(pobj,cobj,snmax,nside=512,lmax=1024,**kwargs_ov):
     # get mask
     Mask = prepare_masks(nside)
     
-    # noise covariance
-    Ncov = prepare_cmb_Ncov(lmax)
-    
     # beam
-    bl = prepare_beam(lmax)
+    bl = np.zeros((2,lmax+1))
+    bl[0] = cmb.beam(15.,lmax,inv=False) # artificial beam to suppress high-ell LB noise
+    bl[1] = cmb.beam(1.,lmax,inv=False)
 
+    # inverse noise spectra
+    pobj.load_nl_LB(lmax)
+    pobj.load_nl_S4(lmax)
+
+    iNls = np.zeros((2,2,lmax+1))
+    
+    iNls[0,0,:] = inv_aps(pobj.nEE[:lmax+1]*bl[0]**2)
+    iNls[1,0,:] = inv_aps(pobj.nBB[:lmax+1]*bl[0]**2)    
+    iNls[0,1,:] = inv_aps(pobj.nls4[0,:lmax+1])
+    iNls[1,1,:] = inv_aps(pobj.nls4[1,:lmax+1])
+    
     # kwargs for cinv
     kwargs_cinv = {'chn':1,'itns':[1000],'eps':[1e-4],'ro':10,'stat':'status_wiener_highl.txt'}
     
     # loop over realizations
-    for rlz in tqdm.tqdm(local.rlz(1,snmax),ncols=100,desc='rlz (cmb wiener high-l)'):
+    for rlz in tqdm.tqdm(local.rlz(snmin,snmax),ncols=100,desc='rlz (cmb wiener high-l)'):
         
-        nlm = pickle.load(open(cobj.fnalm[rlz],"rb"))
-
-        smap = None
+        # S4 noise
+        nlms4  = pickle.load(open(cobj.fnalm[rlz],"rb"))
+        nQs4, nUs4 = cs.utils.hp_alm2map_spin(nside,lmax,lmax,2,nlms4[0],nlms4[1])
+        
+        omap = None
 
         for m in masks:
-
+            # lbfull: use only E-mode for LB-entire region
+            # lbonly: use LB E-mode for LB-only region
+            # lbs4:   use LB+S4 E-mode for LB-S4 overlap region
+            # cmball: try to combine LB and S4 E-mode for LB region
+            
             if misctools.check_path(cobj.fwalm[m][rlz],**kwargs_ov): continue
 
-            if smap is None: # only one time calculation
+            if omap is None: # only one time calculation
             
-                nmap = np.zeros((2,2,npix))
-                nmap[0,0,:], nmap[1,0,:] = cs.utils.hp_alm2map_spin(nside,lmax,lmax,2,nlm[0],nlm[1])
-                nmap[0,1,:], nmap[1,1,:] = cs.utils.hp_alm2map_spin(nside,lmax,lmax,2,nlm[2],nlm[3])
-
+                omap = np.zeros((2,2,npix))
+        
+                # LiteBIRD HILC map
+                hElm, hBlm = hp.read_alm(pobj.fhilc[rlz],(2,3))
+                bElm = hp.almxfl(hElm,bl[0],inplace=True)/cmb.Tcmb
+                bBlm = hp.almxfl(hBlm,bl[0],inplace=True)/cmb.Tcmb
+                __, omap[0,0,:], omap[1,0,:] = hp.alm2map([bElm*0.,bElm,bBlm],nside=nside)
+                
+                # S4
                 Q, U = hp.read_map(pobj.ficmb[rlz],field=(1,2))/c.Tcmb
                 Elm, Blm = cs.utils.hp_map2alm_spin(hp.get_nside(Q),lmax,lmax,2,Q,U)
-
-                smap = np.zeros((2,2,npix))
-                smap[0,0,:], smap[1,0,:] = cs.utils.hp_alm2map_spin(nside,lmax,lmax,2,Elm*bl[0],Blm*bl[0])
-                smap[0,1,:], smap[1,1,:] = cs.utils.hp_alm2map_spin(nside,lmax,lmax,2,Elm*bl[1],Blm*bl[1])
+                sQs4, sUs4 = cs.utils.hp_alm2map_spin(nside,lmax,lmax,2,Elm*bl[1],Blm*bl[1])
+                omap[0,1,:] = sQs4 + nQs4
+                omap[1,1,:] = sUs4 + nUs4
 
             
-            data = (smap+nmap) * Mask[m]
+            data = omap * Mask[m]
             invN = np.zeros((2,2,npix))
-            invN[:,0,:] = Mask[m]/Ncov[0,0,0]
-            invN[:,1,:] = Mask[m]/Ncov[2,2,0]
+            invN[:,0,:] = Mask['lbfull'] # LB mask
+            invN[:,1,:] = Mask['lbs4'] # S4 mask
             
             if m == 'lbfull':  # observed cmb maps with only LB
-                wElm, wBlm = cs.cninv.cnfilter_freq(2,1,nside,lmax,pobj.lcl[1:3,:lmax+1],bl[:1,:],invN[:,:1,:],data[:,:1,:],**kwargs_cinv)
+                wElm, wBlm = cs.cninv.cnfilter_freq(2,1,nside,lmax,pobj.lcl[1:3,:lmax+1],bl[:1,:],invN[:,:1,:],data[:,:1,:],inl=iNls[:,:1,:],**kwargs_cinv)
 
             else:  # observed cmb maps by combining LB and S4
-                wElm, wBlm = cs.cninv.cnfilter_freq(2,2,nside,lmax,pobj.lcl[1:3,:lmax+1],bl,invN,data,**kwargs_cinv)
+                wElm, wBlm = cs.cninv.cnfilter_freq(2,2,nside,lmax,pobj.lcl[1:3,:lmax+1],bl,invN,data,inl=iNls,**kwargs_cinv)
 
             pickle.dump( (wElm,wBlm), open(cobj.fwalm[m][rlz],"wb"), protocol=pickle.HIGHEST_PROTOCOL )
     
 
 def compute_wiener_lowl(pobj,cobj,snmax,nside=128,lmax=190,**kwargs_ov):
+    '''
+    Compute wiener-filtered B-mode at large scale using LiteBIRD B-modes
+    '''
 
     # get mask
     Mask = prepare_masks(nside)
@@ -238,7 +261,7 @@ def compute_wiener_lowl(pobj,cobj,snmax,nside=128,lmax=190,**kwargs_ov):
 
         Qs = None
 
-        for m in masks:
+        for m in masks: # lbfull and cmball look the same
 
             if misctools.check_path(cobj.foblm[m][rlz],**kwargs_ov): continue
 
